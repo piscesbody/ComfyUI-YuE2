@@ -1,0 +1,20 @@
+# ComfyUI-YuE2 依赖
+#
+# 本包复用了 ComfyUI 自带的 torch / transformers / torchaudio / numpy / soundfile，
+# 不在这里锁定它们的版本。下面是被 ComfyUI 基础环境之外的额外依赖。
+
+# --- YuE2 音乐生成 ---
+# 从模型仓库下载 wheel 后本地安装（版本需与模型仓库匹配）：
+#   python -m pip install <模型目录>/yue2_infer-0.1.5-py3-none-any.whl
+tiktoken>=0.9            # YuE2 文本/ABC 分词器
+einops                   # 张量重排
+omegaconf                # 配置解析（YuE2 依赖）
+
+# --- SheetSage2 歌曲转录 ---
+mir_eval                 # 和弦/音高评估（tokenizer 依赖）
+pretty_midi              # MIDI 读写
+mido                     # MIDI 底层
+
+# --- 其它 ---
+tensorboard              # torch.utils.tensorboard（旧版 YuE 编解码器依赖）
+descript-audiotools      # 音频工具

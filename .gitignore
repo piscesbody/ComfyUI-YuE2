@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.DS_Store
+Thumbs.db
+
+# 用户本地输出与测试产物
+_sep_out/
+_sep_test/
+output/
