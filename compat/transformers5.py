@@ -160,12 +160,18 @@ def _patch_config_defaults() -> None:
 
 def _patch_tied_weights_keys() -> None:
     """transformers 5.x 要求 ``_tied_weights_keys`` 是 ``{target: source}`` 字典，
-    4.x 惯用的 ``["key", ...]`` 列表会在 ``get_expanded_tied_weights_keys`` 里崩溃。"""
+    4.x 惯用的 ``["key", ...]`` 列表会在 ``get_expanded_tied_weights_keys`` 里崩溃。
+
+    该方法本身是 5.x 引入的；4.x（如 yue2-infer 依赖的 4.57.x）没有它，
+    列表写法在 4.x 下本来就合法，无需补丁——探测不到该方法就直接跳过。
+    """
     try:
         from transformers import PreTrainedModel
     except ImportError:
         return
     if getattr(PreTrainedModel, "_yue2_tied_patched", False):
+        return
+    if not hasattr(PreTrainedModel, "get_expanded_tied_weights_keys"):
         return
     original = PreTrainedModel.get_expanded_tied_weights_keys
 
