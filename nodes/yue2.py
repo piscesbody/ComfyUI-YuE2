@@ -13,6 +13,7 @@ from .utils import audio_dict, progress_bar, safe_stem, timestamp_dir
 COT_MODES = ["full", "melody", "off"]
 VAE_DECODE_MODES = ["tiled", "full"]
 ATTN_BACKENDS = ["auto", "external-flash", "cudnn", "sdpa"]
+QUANT_MODES = ["none", "fp8"]
 
 
 class YuE2Loader:
@@ -38,6 +39,9 @@ class YuE2Loader:
                     "tooltip": "AR 解码 attention 内核。auto=自动选择(Windows 无内置 "
                                "flash 时用 cuDNN); external-flash=用环境里的 "
                                "pip flash-attn(需已安装); 实测与 cuDNN 速度相当"}),
+                "quantization": (QUANT_MODES, {"default": "none",
+                    "tooltip": "fp8=AR 线性层 FP8 量化(官方实验性; 实测省 ~1.3GB "
+                               "显存但慢 ~6 倍, 因禁用 CUDA Graph; 仅限显存极端受限)"}),
             },
         }
 
@@ -47,11 +51,12 @@ class YuE2Loader:
     CATEGORY = "YuE2"
 
     def load(self, model, vae, device, memory_budget_gib, offload_ar, offline,
-             attention_backend="auto"):
+             attention_backend="auto", quantization="none"):
         pipe = yue2_model.load(model, vae, device=device,
                                memory_budget_gib=memory_budget_gib,
                                offload_ar=offload_ar, offline=offline,
-                               attention_backend=attention_backend)
+                               attention_backend=attention_backend,
+                               quantization=quantization)
         return (pipe,)
 
 

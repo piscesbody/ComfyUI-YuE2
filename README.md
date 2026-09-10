@@ -126,6 +126,18 @@ yue2_music:
 `style` 写曲风、乐器、人声特质、语言；`lyrics` 用 `[verse]`/`[chorus]` 等段落标签。
 把 `abort_after_plan` 打开可只出乐谱、不合成音频（先看谱再决定）。
 
+显存与性能选项（RTX 4090 实测）：
+
+| 参数 | 选项 | 说明 |
+|---|---|---|
+| `vae_decode` | `tiled` / `full` | 分块解码（默认，显存友好）/ 整曲一次解码（快 ~2s，需大显存，不足自动回退）。VAE 解码只占总时长 ~2%，日常保持默认即可 |
+| `vae_tile_frames` | 0=自动 / 256~4096 | 分块粒度。8GB 显存建议 256；实测 3 分钟歌各档峰值差 ~1GB |
+| `attention_backend` | `auto` / `external-flash` / `cudnn` / `sdpa` | AR 解码内核。`external-flash` 用环境里 pip 安装的 flash-attn；实测与 cuDNN 速度持平（512 步 6.2ms/步） |
+| `quantization` | `none` / `fp8` | FP8 量化（官方实验性）。实测省 ~1.3GB 但慢 ~6 倍（禁用 CUDA Graph），仅限显存极端受限 |
+
+> 生成耗时的主体是 AR 自回归 token 生成（3 分钟歌约 70-90s），
+> VAE 解码仅 ~2s。提速请优先调 `ode_steps`/`semantic_max_tokens`，而非解码选项。
+
 ### SheetSage2 歌曲转录
 
 | 节点 | 说明 |

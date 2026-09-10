@@ -100,7 +100,8 @@ def force_attention_backend(backend: str) -> bool:
 
 def load(model_name: str, vae_name: str = "YuE2-Vae", device: str = "cuda",
          memory_budget_gib: int = 24, offload_ar: bool = False,
-         offline: bool = False, attention_backend: str = "auto"):
+         offline: bool = False, attention_backend: str = "auto",
+         quantization: str = "none"):
     """创建或复用 YuE2 管线（按参数缓存）。"""
     import yue2
 
@@ -111,7 +112,7 @@ def load(model_name: str, vae_name: str = "YuE2-Vae", device: str = "cuda",
     vae_path = vae_dir(model_path, vae_name)
 
     key = (model_path, vae_path, device, int(memory_budget_gib), bool(offload_ar),
-           bool(offline), attention_backend)
+           bool(offline), attention_backend, quantization)
     cached = _cache.get("pipeline")
     if cached is not None and _cache.get("key") == key:
         return cached
@@ -125,6 +126,7 @@ def load(model_name: str, vae_name: str = "YuE2-Vae", device: str = "cuda",
         model_path, vae=vae_path, device=device,
         memory_budget_gib=int(memory_budget_gib), offload_ar=bool(offload_ar),
         local_files_only=bool(offline), progress=False,
+        quantization=quantization,
     )
     _reset_memory_fraction()
     _cache["pipeline"] = pipe
