@@ -177,7 +177,7 @@ class LyricsFormatter:
     # ── 解析 ──────────────────────────────────────────────────────────
 
     def parse_subtitles(self, text: str):
-        """支持 ``起-止: 文本`` 与 SRT 两种格式，返回 ``[(start, end, text)]``。
+        """支持 ``起-止: 文本``、标准 SRT、LRC 三种格式，返回 ``[(start, end, text)]``。
 
         对时间戳不可靠的行做兜底：强制对齐器在纯音乐/气声片段上可能给出
         ``0.00-0.00`` 这类零长度区间，若直接使用会让这些行全部落到第一段。
@@ -192,6 +192,16 @@ class LyricsFormatter:
             m = re.match(r"^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*:\s*(.+)$", line)
             if m:
                 rows.append((float(m.group(1)), float(m.group(2)), m.group(3).strip()))
+                continue
+            # LRC: [mm:ss.xx]歌词（同一行可有多个连续时间标签）。
+            # 只有行起点没有终点 → end 记 None，末尾统一延伸到下一行起点。
+            lrc = re.match(r"^((?:\[\d+:\d+(?:\.\d+)?\])+)(.*)$", line)
+            if lrc:
+                text_part = lrc.group(2).strip()
+                if text_part:
+                    for tag in re.findall(r"\[(\d+):(\d+(?:\.\d+)?)\]", lrc.group(1)):
+                        t = int(tag[0]) * 60 + float(tag[1])
+                        rows.append((t, None, text_part))
                 continue
             m = re.match(
                 r"^(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)$", line)
@@ -212,12 +222,30 @@ class LyricsFormatter:
         for start, end, text in rows:
             if not text:
                 continue
-            # 零长度、倒挂或 (0,0) 哨兵：对齐器在歌声上失败的产物，时间视为未知
-            if start is None or end is None or end <= start or (start == 0.0 and end == 0.0):
+            # LRC 头部元数据行（歌名/词曲作者等），不是歌词
+            if re.match(r"^(词|曲|编曲|作词|作曲|编|混音|母带|和声|吉他|钢琴|"
+                        r"制作|监制|歌词|专辑|歌手|title|artist|album|by)[:：]",
+                        text, re.IGNORECASE):
+                continue
+            # "歌名 - 歌手" 形式的标题行（LRC 首行惯例: 时间 0 且含 " - "）
+            if start == 0 and " - " in text:
+                continue
+            # 零长度、倒挂或 (0,0) 哨兵：对齐器在歌声上失败的产物，时间视为未知。
+            # end 为 None 的 LRC 行是"只有起点"的正常形态，下一循环补终点。
+            if start is None or (end is not None and (end <= start or
+                                                      (start == 0.0 and end == 0.0))):
                 out.append((None, None, text))
             else:
                 out.append((start, end, text))
-        return out
+        # LRC 行只有起点：延伸到下一行起点（末行 +8s），保证区间有效
+        fixed = []
+        for i, (s, e, t) in enumerate(out):
+            if s is not None and e is None:
+                nxt = next((out[j][0] for j in range(i + 1, len(out))
+                            if out[j][0] is not None), None)
+                e = nxt if (nxt is not None and nxt > s) else s + 8.0
+            fixed.append((s, e, t))
+        return fixed
 
     def _fill_missing_times(self, rows):
         """为时间无效的行按行序插值补位，使其仍能归入合理的段落。
@@ -319,6 +347,17 @@ class LyricsFormatter:
                     sections[-1][1].extend(bucket)
                 else:
                     sections.append((label, bucket))
+            # 歌词掉进纯音乐段（间奏/前奏）说明边界有偏移：并入下一个歌唱段，
+            # 间奏保持为空标签（YuE2 把空段当器乐）。
+            singing = [i for i, (name, _) in enumerate(sections)
+                       if (name or "").lower() not in _NON_SINGING]
+            if singing:
+                def nearest_singing(i):
+                    return min(singing, key=lambda j: (abs(j - i), j))
+                for i, (name, bucket) in enumerate(sections):
+                    if (name or "").lower() in _NON_SINGING and bucket:
+                        sections[nearest_singing(i)][1].extend(bucket)
+                        bucket.clear()
 
         out_lines: list[str] = []
         for name, bucket in sections:
