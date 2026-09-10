@@ -6,6 +6,7 @@ SheetSage2: 歌曲 -> ABC 乐谱 + 曲式结构（供翻唱与歌词分段）
 """
 from __future__ import annotations
 
+import io
 import os
 import re
 
@@ -154,10 +155,14 @@ class LyricsFormatter:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "subtitles": ("STRING", {"forceInput": True,
-                    "tooltip": "带时间戳的字幕（每行 '起-止: 文本'）或 SRT 文本"}),
-                "structure": ("STRING", {"forceInput": True,
-                    "tooltip": "SheetSage2 节点的 structure 输出；留空则全部归入 [verse]"}),
+                # 多行文本框：可直接粘贴 LRC/SRT/纯歌词，也可从上游连线
+                # （连线后 widget 自动隐藏）。LRC 详见 parse_subtitles。
+                "subtitles": ("STRING", {"multiline": True, "default": "",
+                    "tooltip": "歌词来源: 直接粘贴 LRC / SRT / 每行'起-止: 文本'，"
+                               "或连线 ASR/字幕节点输出"}),
+                "structure": ("STRING", {"multiline": True, "default": "",
+                    "tooltip": "SheetSage2 节点的 structure 输出（每行'起点<tab>终点<tab>段名'），"
+                               "可连线也可留空——留空则全部归入 [verse]"}),
                 "clean_punct": ("BOOLEAN", {"default": True,
                     "tooltip": "去掉歌词文本中的标点"}),
                 "dedupe": ("BOOLEAN", {"default": True,
@@ -376,6 +381,43 @@ class LyricsFormatter:
         return (lyrics, report)
 
 
+class LoadLyricsFile:
+    """从文件读取歌词（LRC / SRT / 纯文本），交给歌词格式化或歌词结构化。
+
+    文件放 ComfyUI 的 input 目录（也可填绝对路径）。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        import folder_paths
+        input_dir = folder_paths.get_input_directory()
+        try:
+            files = sorted(f for f in os.listdir(input_dir)
+                           if f.lower().endswith((".lrc", ".srt", ".txt")))
+        except OSError:
+            files = []
+        return {
+            "required": {
+                "lyrics_file": (sorted(files) or ["（把 .lrc/.srt/.txt 放入 ComfyUI input 目录）"],),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("text",)
+    FUNCTION = "load"
+    CATEGORY = "YuE2/SheetSage2"
+
+    def load(self, lyrics_file):
+        import folder_paths
+        path = lyrics_file if os.path.isabs(lyrics_file) else \
+            os.path.join(folder_paths.get_input_directory(), lyrics_file)
+        if not os.path.isfile(path):
+            raise ValueError(f"歌词文件不存在: {path}")
+        text = io.open(path, encoding="utf-8", errors="replace").read()
+        print(f"[歌词文件] {lyrics_file}: {len(text)} 字符")
+        return (text,)
+
+
 class LyricsStructurer:
     """把纯文本歌词自动加上 [verse]/[chorus] 段落标签，直接交给 YuE2。
 
@@ -482,6 +524,7 @@ NODE_CLASS_MAPPINGS = {
     "SheetSage2Transcribe": SheetSage2Transcribe,
     "YuE2LyricsFormatter": LyricsFormatter,
     "YuE2LyricsStructurer": LyricsStructurer,
+    "YuE2LoadLyricsFile": LoadLyricsFile,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -489,4 +532,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "SheetSage2Transcribe": "SheetSage2 歌曲转录",
     "YuE2LyricsFormatter": "歌词格式化 (时间戳→段落)",
     "YuE2LyricsStructurer": "歌词结构化 (纯文本→段落)",
+    "YuE2LoadLyricsFile": "歌词文件加载 (LRC/SRT)",
 }
