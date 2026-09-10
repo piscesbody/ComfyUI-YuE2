@@ -63,18 +63,55 @@ def _apply_windows_patch() -> None:
     apply_yue2_windows_patch()
 
 
+def force_attention_backend(backend: str) -> bool:
+    """强制 GraphAR 使用指定 attention 后端（external-flash 需先注入）。
+
+    返回是否成功。``auto`` 什么都不做（走 yue2_patch 的自动降级逻辑）。
+    """
+    if backend in ("", "auto"):
+        return True
+    try:
+        import yue2.cuda_graph as cg
+    except ImportError:
+        return False
+    if getattr(cg, "_comfy_yue2_forced_backend", None) == backend:
+        return True
+    from . import yue2_patch
+    if backend == "external-flash":
+        if not yue2_patch.apply_external_flash_backend():
+            print("[ComfyUI-YuE2] external-flash 不可用（需 pip flash-attn 且 CUDA）, "
+                  "回退自动后端")
+            return False
+    orig_init = cg.GraphAR.__init__
+
+    def patched_init(self, model, prefixes, max_tokens, *, capture=True,
+                     attention_backend="auto", fuse_projections=False):
+        if attention_backend == "auto":
+            attention_backend = backend
+        return orig_init(self, model, prefixes, max_tokens, capture=capture,
+                         attention_backend=attention_backend,
+                         fuse_projections=fuse_projections)
+
+    cg.GraphAR.__init__ = patched_init
+    cg._comfy_yue2_forced_backend = backend
+    print(f"[ComfyUI-YuE2] attention 后端强制为 {backend}")
+    return True
+
+
 def load(model_name: str, vae_name: str = "YuE2-Vae", device: str = "cuda",
          memory_budget_gib: int = 24, offload_ar: bool = False,
-         offline: bool = False):
+         offline: bool = False, attention_backend: str = "auto"):
     """创建或复用 YuE2 管线（按参数缓存）。"""
     import yue2
 
     _apply_windows_patch()
+    force_attention_backend(attention_backend)
 
     model_path = resolve("yue2", model_name)
     vae_path = vae_dir(model_path, vae_name)
 
-    key = (model_path, vae_path, device, int(memory_budget_gib), bool(offload_ar), bool(offline))
+    key = (model_path, vae_path, device, int(memory_budget_gib), bool(offload_ar),
+           bool(offline), attention_backend)
     cached = _cache.get("pipeline")
     if cached is not None and _cache.get("key") == key:
         return cached
@@ -122,16 +159,52 @@ def _with_ode_steps(pipe, ode_steps: int | None):
 def generate(pipe, *, style: str, lyrics: str, cot: str = "full", seed: int = 831001,
              abc: str | None = None, cfg_scale: float | None = None,
              abc_sampling: dict | None = None, semantic_sampling: dict | None = None,
-             ode_steps: int | None = None, on_progress=None):
-    """生成歌曲，返回 ``SongResult``。``on_progress`` 在每生成一个 token 时回调。"""
+             ode_steps: int | None = None, on_progress=None,
+             vae_decode: str = "tiled", vae_tile_frames: int | None = None):
+    """生成歌曲，返回 ``SongResult``。``on_progress`` 在每生成一个 token 时回调。
+
+    vae_decode: ``tiled``=官方分块解码（显存友好）; ``full``=整曲一次解码
+    （快，整曲波形驻留 GPU，需大显存; 不足时自动回退 tiled）。
+    vae_tile_frames: tiled 模式的块大小（latent 帧数）。None=管线默认
+    （预算 ≤12GB 为 512，否则 1024）。更小的值峰值显存更低、块数更多。
+    """
     with runtime_flags():
         _with_ode_steps(pipe, ode_steps)
-        return pipe(
-            style=style, lyrics=lyrics, cot=cot, seed=int(seed),
-            abc=abc, cfg_scale=cfg_scale,
-            abc_sampling=abc_sampling, semantic_sampling=semantic_sampling,
-            on_token=on_progress,
-        )
+        orig_core = pipe.vae_core_frames
+        if vae_tile_frames:
+            pipe.vae_core_frames = int(vae_tile_frames)
+
+        if vae_decode == "full":
+            # pipe.__call__ 的 decode 步骤写死 tiled；这里临时改写该方法走 full，
+            # 显存不足时自动回退官方 tiled 路径。
+            import torch as _torch
+            orig_decode = pipe.decode
+
+            def full_or_fallback(latents, **kw):
+                try:
+                    return orig_decode(latents, full=True)
+                except _torch.OutOfMemoryError:
+                    print("[ComfyUI-YuE2] 整曲解码显存不足, 自动回退分块解码")
+                    _torch.cuda.empty_cache()
+                    return orig_decode(latents)
+
+            pipe.decode = full_or_fallback
+            try:
+                return pipe(style=style, lyrics=lyrics, cot=cot, seed=int(seed),
+                            abc=abc, cfg_scale=cfg_scale,
+                            abc_sampling=abc_sampling, semantic_sampling=semantic_sampling,
+                            on_token=on_progress)
+            finally:
+                pipe.decode = orig_decode
+                pipe.vae_core_frames = orig_core
+
+        try:
+            return pipe(style=style, lyrics=lyrics, cot=cot, seed=int(seed),
+                        abc=abc, cfg_scale=cfg_scale,
+                        abc_sampling=abc_sampling, semantic_sampling=semantic_sampling,
+                        on_token=on_progress)
+        finally:
+            pipe.vae_core_frames = orig_core
 
 
 def plan(pipe, *, style: str, lyrics: str, cot: str = "full", seed: int = 831001,

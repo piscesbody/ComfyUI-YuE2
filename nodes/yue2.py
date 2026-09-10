@@ -11,6 +11,8 @@ from ..models.paths import list_snapshots, vae_options
 from .utils import audio_dict, progress_bar, safe_stem, timestamp_dir
 
 COT_MODES = ["full", "melody", "off"]
+VAE_DECODE_MODES = ["tiled", "full"]
+ATTN_BACKENDS = ["auto", "external-flash", "cudnn", "sdpa"]
 
 
 class YuE2Loader:
@@ -32,6 +34,10 @@ class YuE2Loader:
                     "tooltip": "NAR 阶段临时卸载 AR 模块以省显存（更慢）"}),
                 "offline": ("BOOLEAN", {"default": True,
                     "tooltip": "只用本地文件; 关闭则在缺模型时联网下载"}),
+                "attention_backend": (ATTN_BACKENDS, {"default": "auto",
+                    "tooltip": "AR 解码 attention 内核。auto=自动选择(Windows 无内置 "
+                               "flash 时用 cuDNN); external-flash=用环境里的 "
+                               "pip flash-attn(需已安装); 实测与 cuDNN 速度相当"}),
             },
         }
 
@@ -40,10 +46,12 @@ class YuE2Loader:
     FUNCTION = "load"
     CATEGORY = "YuE2"
 
-    def load(self, model, vae, device, memory_budget_gib, offload_ar, offline):
+    def load(self, model, vae, device, memory_budget_gib, offload_ar, offline,
+             attention_backend="auto"):
         pipe = yue2_model.load(model, vae, device=device,
                                memory_budget_gib=memory_budget_gib,
-                               offload_ar=offload_ar, offline=offline)
+                               offload_ar=offload_ar, offline=offline,
+                               attention_backend=attention_backend)
         return (pipe,)
 
 
@@ -96,6 +104,12 @@ class YuE2Sampler:
                     "tooltip": "另存 48 kHz FLAC 到 output/YuE2"}),
                 "save_abc": ("BOOLEAN", {"default": True,
                     "tooltip": "保存 ABC 乐谱到 output/YuE2"}),
+                "vae_decode": (VAE_DECODE_MODES, {"default": "tiled",
+                    "tooltip": "full=整曲一次解码(大显存更快, 不足自动回退); "
+                               "tiled=分块解码(显存友好)"}),
+                "vae_tile_frames": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 128,
+                    "tooltip": "tiled 块大小(latent帧); 0=默认(小预算512/大预算1024); "
+                               "8GB 显存建议 256"}),
             },
             "optional": {
                 "abc": ("STRING", {"forceInput": True,
@@ -113,6 +127,7 @@ class YuE2Sampler:
     def generate(self, pipeline, style, lyrics, cot, seed, cfg_scale, ode_steps,
                  abc_max_tokens, semantic_max_tokens, abc_temperature,
                  semantic_temperature, save_flac, save_abc,
+                 vae_decode="tiled", vae_tile_frames=0,
                  abc=None, abort_after_plan=False):
         style, lyrics = (style or "").strip(), (lyrics or "").strip()
         if not style:
@@ -156,7 +171,9 @@ class YuE2Sampler:
             pipeline, style=style, lyrics=lyrics, cot=cot, seed=seed,
             abc=abc_text, cfg_scale=cfg_scale,
             abc_sampling=abc_sampling, semantic_sampling=semantic_sampling,
-            ode_steps=ode_steps, on_progress=on_token)
+            ode_steps=ode_steps, on_progress=on_token,
+            vae_decode=vae_decode,
+            vae_tile_frames=int(vae_tile_frames) if vae_tile_frames else None)
 
         out_dir = timestamp_dir("YuE2") if (save_flac or save_abc) else None
         stem = f"{safe_stem(style)}_s{seed}"
