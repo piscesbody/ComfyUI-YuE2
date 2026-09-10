@@ -8,7 +8,7 @@ import torch
 
 from ..models import yue2 as yue2_model
 from ..models.paths import list_snapshots, vae_options
-from .utils import audio_dict, progress_bar, safe_stem, timestamp_dir
+from .utils import advance, audio_dict, progress_bar, safe_stem, timestamp_dir
 
 COT_MODES = ["full", "melody", "off"]
 VAE_DECODE_MODES = ["tiled", "full"]
