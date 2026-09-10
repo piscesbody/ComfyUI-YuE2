@@ -162,13 +162,15 @@ def generate(pipe, *, style: str, lyrics: str, cot: str = "full", seed: int = 83
              abc: str | None = None, cfg_scale: float | None = None,
              abc_sampling: dict | None = None, semantic_sampling: dict | None = None,
              ode_steps: int | None = None, on_progress=None,
-             vae_decode: str = "tiled", vae_tile_frames: int | None = None):
+             vae_decode: str = "tiled", vae_tile_frames: int | None = None,
+             on_vae_progress=None):
     """生成歌曲，返回 ``SongResult``。``on_progress`` 在每生成一个 token 时回调。
 
     vae_decode: ``tiled``=官方分块解码（显存友好）; ``full``=整曲一次解码
     （快，整曲波形驻留 GPU，需大显存; 不足时自动回退 tiled）。
     vae_tile_frames: tiled 模式的块大小（latent 帧数）。None=管线默认
     （预算 ≤12GB 为 512，否则 1024）。更小的值峰值显存更低、块数更多。
+    on_vae_progress: ``(completed, total)`` 回调，VAE 分块解码每完成一块调用一次。
     """
     with runtime_flags():
         _with_ode_steps(pipe, ode_steps)
@@ -183,14 +185,75 @@ def generate(pipe, *, style: str, lyrics: str, cot: str = "full", seed: int = 83
             orig_decode = pipe.decode
 
             def full_or_fallback(latents, **kw):
+                if on_vae_progress is not None:
+                    on_vae_progress(0, 1)
                 try:
-                    return orig_decode(latents, full=True)
+                    result = orig_decode(latents, full=True)
                 except _torch.OutOfMemoryError:
                     print("[ComfyUI-YuE2] 整曲解码显存不足, 自动回退分块解码")
                     _torch.cuda.empty_cache()
-                    return orig_decode(latents)
+                    result = orig_decode(latents)
+                if on_vae_progress is not None:
+                    on_vae_progress(1, 1)
+                return result
 
             pipe.decode = full_or_fallback
+            try:
+                return pipe(style=style, lyrics=lyrics, cot=cot, seed=int(seed),
+                            abc=abc, cfg_scale=cfg_scale,
+                            abc_sampling=abc_sampling, semantic_sampling=semantic_sampling,
+                            on_token=on_progress)
+            finally:
+                pipe.decode = orig_decode
+                pipe.vae_core_frames = orig_core
+
+        # tiled 路径: 官方 decode() 只有在 pipe.progress=True 时才把每块进度
+        # 传给 Progress 阶段（否则 report=None）。这里临时打开 progress 并包装
+        # _status，把 "Decoding audio" 阶段的 update 转发到 ComfyUI 进度条。
+        if on_vae_progress is not None:
+            import contextlib as _cl
+            orig_decode = pipe.decode
+            orig_status = pipe._status
+            orig_progress = pipe.progress
+
+            def decode_with_progress(latents, **kw):
+                try:
+                    import torch as _torch
+                    z = _torch.as_tensor(latents)
+                    # latents 可能是 [T,64]（decode 内部才转置），统一取 64 通道维
+                    frames = z.shape[0] if z.ndim == 2 and z.shape[1] == 64 else z.shape[-1]
+                    core = int(pipe.vae_core_frames)
+                    total = max(1, (int(frames) + core - 1) // core)
+                except Exception:
+                    total = None
+                on_vae_progress(0, total or 1)
+                pipe.progress = True          # 激活官方 report 闭包
+
+                @_cl.contextmanager
+                def hooked_status(label, *, total=None, unit=None):
+                    with orig_status(label, total=total, unit=unit) as stage:
+                        if label == "Decoding audio":
+                            orig_update = stage.update
+
+                            def spy_update(completed, total=None):
+                                try:
+                                    on_vae_progress(completed, total if total is not None
+                                                    else stage.total)
+                                except Exception:
+                                    pass
+                                return orig_update(completed, total=total)
+
+                            stage.update = spy_update
+                        yield stage
+
+                pipe._status = hooked_status
+                try:
+                    return orig_decode(latents, **kw)
+                finally:
+                    pipe._status = orig_status
+                    pipe.progress = orig_progress
+
+            pipe.decode = decode_with_progress
             try:
                 return pipe(style=style, lyrics=lyrics, cot=cot, seed=int(seed),
                             abc=abc, cfg_scale=cfg_scale,

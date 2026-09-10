@@ -156,6 +156,17 @@ class YuE2Sampler:
                 except Exception:
                     pass
 
+        vae_bar_holder: list = []
+
+        def on_vae_progress(completed, total):
+            """VAE 分块解码进度：首次回调时按真实块数建第二条进度条。"""
+            if not vae_bar_holder:
+                vae_bar_holder.append(progress_bar(int(total) if total else 1))
+            advance(vae_bar_holder[0],
+                    max(0, int(completed) - getattr(vae_bar_holder[0], "_yue2_done", 0)))
+            if vae_bar_holder[0] is not None:
+                vae_bar_holder[0]._yue2_done = int(completed)
+
         # 只看乐谱：走 plan 分支，不合成音频
         if abort_after_plan:
             plan = yue2_model.plan(pipeline, style=style, lyrics=lyrics, cot=cot,
@@ -178,7 +189,8 @@ class YuE2Sampler:
             abc_sampling=abc_sampling, semantic_sampling=semantic_sampling,
             ode_steps=ode_steps, on_progress=on_token,
             vae_decode=vae_decode,
-            vae_tile_frames=int(vae_tile_frames) if vae_tile_frames else None)
+            vae_tile_frames=int(vae_tile_frames) if vae_tile_frames else None,
+            on_vae_progress=on_vae_progress)
 
         out_dir = timestamp_dir("YuE2") if (save_flac or save_abc) else None
         stem = f"{safe_stem(style)}_s{seed}"
