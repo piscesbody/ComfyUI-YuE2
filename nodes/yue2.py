@@ -14,6 +14,7 @@ COT_MODES = ["full", "melody", "off"]
 VAE_DECODE_MODES = ["tiled", "full"]
 ATTN_BACKENDS = ["auto", "external-flash", "cudnn", "sdpa"]
 QUANT_MODES = ["none", "fp8"]
+FRAMES_PER_SECOND = 25      # YuE2 语义 token 帧率（与 comfy 官方实现一致）
 
 
 class YuE2Loader:
@@ -101,9 +102,19 @@ class YuE2Sampler:
                     "tooltip": "文本引导强度; 1.0=官方默认(off 模式默认 1.01)"}),
                 "ode_steps": ("INT", {"default": 32, "min": 4, "max": 64, "step": 1,
                     "tooltip": "声学流匹配步数; 官方默认 32"}),
+                "max_duration": ("FLOAT", {"default": 360.0, "min": 4.0, "max": 640.0, "step": 1.0,
+                    "tooltip": "歌曲时长预算(秒)。语义 token 按 25帧/秒 换算; "
+                               "生成可能在预算内提前结束。缩短可显著提速"}),
                 "abc_max_tokens": ("INT", {"default": 4096, "min": 64, "max": 8192, "step": 32}),
-                "semantic_max_tokens": ("INT", {"default": 9000, "min": 200, "max": 16384, "step": 32}),
+                "semantic_max_tokens": ("INT", {"default": 9000, "min": 200, "max": 16384, "step": 32,
+                    "tooltip": "语义 token 上限(高级)。与 max_duration 联动: "
+                               "取 min(本值, max_duration×25)"}),
                 "abc_temperature": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 5.0, "step": 0.01}),
+                "abc_top_p": ("FLOAT", {"default": 0.9, "min": 0.01, "max": 1.0, "step": 0.01}),
+                "abc_top_k": ("INT", {"default": 30, "min": 1, "max": 32768, "step": 1,
+                    "tooltip": "ABC 规划采样参数; 默认取 comfy 官方 PR 调优值 "
+                               "(top_p 0.9 / top_k 30 / rep 1.005)"}),
+                "abc_repetition_penalty": ("FLOAT", {"default": 1.005, "min": 0.01, "max": 10.0, "step": 0.005}),
                 "semantic_temperature": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 5.0, "step": 0.01}),
                 "save_flac": ("BOOLEAN", {"default": True,
                     "tooltip": "另存 48 kHz FLAC 到 output/YuE2"}),
@@ -130,7 +141,8 @@ class YuE2Sampler:
     CATEGORY = "YuE2"
 
     def generate(self, pipeline, style, lyrics, cot, seed, cfg_scale, ode_steps,
-                 abc_max_tokens, semantic_max_tokens, abc_temperature,
+                 max_duration, abc_max_tokens, semantic_max_tokens, abc_temperature,
+                 abc_top_p, abc_top_k, abc_repetition_penalty,
                  semantic_temperature, save_flac, save_abc,
                  vae_decode="tiled", vae_tile_frames=0,
                  abc=None, abort_after_plan=False):
@@ -143,11 +155,16 @@ class YuE2Sampler:
         if abc_text and cot == "off":
             raise ValueError("外部 ABC 需要 cot=melody 或 full")
 
-        abc_sampling = {"temperature": abc_temperature, "max_tokens": int(abc_max_tokens)}
+        # YuE2 语义帧率 25 token/秒；时长预算与 token 上限取较小者
+        sem_budget = min(int(semantic_max_tokens),
+                         max(200, int(round(max_duration * FRAMES_PER_SECOND))))
+        abc_sampling = {"temperature": abc_temperature, "max_tokens": int(abc_max_tokens),
+                        "top_p": abc_top_p, "top_k": int(abc_top_k),
+                        "repetition_penalty": abc_repetition_penalty}
         semantic_sampling = {"temperature": semantic_temperature,
-                             "max_tokens": int(semantic_max_tokens)}
+                             "max_tokens": sem_budget}
 
-        bar = progress_bar(int(abc_max_tokens) + int(semantic_max_tokens))
+        bar = progress_bar(int(abc_max_tokens) + sem_budget)
 
         def on_token(_phase, _token):
             if bar is not None:

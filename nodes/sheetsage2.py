@@ -12,7 +12,8 @@ import re
 
 from ..models import sheetsage2 as ss2_model
 from ..models.paths import list_snapshots
-from .utils import mono_waveform, timestamp_dir
+from .utils import (advance, check_interrupted, mono_waveform, progress_bar,
+                    timestamp_dir)
 
 # SheetSage2 的结构名 -> YuE2 段落标签（未识别的原样保留）
 _SECTION_ALIASES = {
@@ -119,9 +120,30 @@ class SheetSage2Transcribe:
         wav, rate = mono_waveform(audio)
         out_dir = timestamp_dir("SheetSage2") if save_outputs else None
 
+        # 转录进度：管线按窗口/解码 token 上报 dict（stage=decoding 等）。
+        # 换歌的解码阶段较久（每窗口数千 token），映射成一条 ComfyUI 进度条。
+        bar_holder: list = []
+
+        def on_progress(info: dict):
+            stage = info.get("stage")
+            if stage == "decoding":
+                window, windows = info.get("window", 1), info.get("windows", 1)
+                tokens = info.get("tokens", 0)
+                total = max(1, int(windows) * 5120)   # 每窗口 token 上限（模型 max_output_seq_len）
+                done = (int(window) - 1) * 5120 + int(tokens)
+                if bar_holder and bar_holder[0] is not None:
+                    advance(bar_holder[0], max(0, done - getattr(bar_holder[0], "_ss2_done", 0)))
+                    bar_holder[0]._ss2_done = done
+                elif bar_holder:
+                    bar_holder[0] = progress_bar(total)
+                else:
+                    bar_holder.append(progress_bar(total))
+            # 每次进度回调都是可中断点
+            check_interrupted()
+
         abc_text, structure_text, result = ss2_model.transcribe(
             model, wav, rate, melody_only=melody_only, preset=preset,
-            max_seconds=max_seconds, output_dir=out_dir)
+            max_seconds=max_seconds, output_dir=out_dir, progress=on_progress)
 
         chords = sum(1 for e in (result.get("events") or [])
                      if (e.get("values") or {}).get("chord"))

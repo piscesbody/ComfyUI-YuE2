@@ -158,6 +158,38 @@ def _with_ode_steps(pipe, ode_steps: int | None):
     pipe.generation_config = dataclasses.replace(config, ode_steps=int(ode_steps))
 
 
+def _comfy_cancelled():
+    """把 ComfyUI 的中断检测适配成 yue2_infer 的 cancelled 回调。
+
+    返回 None 表示当前不在 ComfyUI 执行环境（如独立测试脚本），不启用中断。
+    """
+    try:
+        from comfy.model_management import (throw_exception_if_processing_interrupted,
+                                            InterruptProcessingException)
+
+        def check():
+            try:
+                throw_exception_if_processing_interrupted()
+            except InterruptProcessingException:
+                return True          # 已中断 → 通知 yue2 停止
+            except Exception:
+                return False
+        return check
+    except ImportError:
+        return None
+
+
+def _check_interrupted(cancelled=None):
+    """在无 cancelled 回调的环节（VAE 各块之间）手动抛出 ComfyUI 中断。"""
+    if cancelled is not None and not cancelled():
+        return
+    try:
+        from comfy.model_management import InterruptProcessingException
+        raise InterruptProcessingException()
+    except ImportError:
+        pass
+
+
 def generate(pipe, *, style: str, lyrics: str, cot: str = "full", seed: int = 831001,
              abc: str | None = None, cfg_scale: float | None = None,
              abc_sampling: dict | None = None, semantic_sampling: dict | None = None,
@@ -171,7 +203,10 @@ def generate(pipe, *, style: str, lyrics: str, cot: str = "full", seed: int = 83
     vae_tile_frames: tiled 模式的块大小（latent 帧数）。None=管线默认
     （预算 ≤12GB 为 512，否则 1024）。更小的值峰值显存更低、块数更多。
     on_vae_progress: ``(completed, total)`` 回调，VAE 分块解码每完成一块调用一次。
+
+    在 ComfyUI 内运行时接入界面中断：plan/语义/NAR/VAE 各阶段均可随时取消。
     """
+    cancelled = _comfy_cancelled()
     with runtime_flags():
         _with_ode_steps(pipe, ode_steps)
         orig_core = pipe.vae_core_frames
@@ -185,6 +220,7 @@ def generate(pipe, *, style: str, lyrics: str, cot: str = "full", seed: int = 83
             orig_decode = pipe.decode
 
             def full_or_fallback(latents, **kw):
+                _check_interrupted(cancelled)
                 if on_vae_progress is not None:
                     on_vae_progress(0, 1)
                 try:
@@ -202,7 +238,7 @@ def generate(pipe, *, style: str, lyrics: str, cot: str = "full", seed: int = 83
                 return pipe(style=style, lyrics=lyrics, cot=cot, seed=int(seed),
                             abc=abc, cfg_scale=cfg_scale,
                             abc_sampling=abc_sampling, semantic_sampling=semantic_sampling,
-                            on_token=on_progress)
+                            on_token=on_progress, cancelled=cancelled)
             finally:
                 pipe.decode = orig_decode
                 pipe.vae_core_frames = orig_core
@@ -236,6 +272,7 @@ def generate(pipe, *, style: str, lyrics: str, cot: str = "full", seed: int = 83
                             orig_update = stage.update
 
                             def spy_update(completed, total=None):
+                                _check_interrupted(cancelled)   # 每块完成时响应中断
                                 try:
                                     on_vae_progress(completed, total if total is not None
                                                     else stage.total)
@@ -258,7 +295,7 @@ def generate(pipe, *, style: str, lyrics: str, cot: str = "full", seed: int = 83
                 return pipe(style=style, lyrics=lyrics, cot=cot, seed=int(seed),
                             abc=abc, cfg_scale=cfg_scale,
                             abc_sampling=abc_sampling, semantic_sampling=semantic_sampling,
-                            on_token=on_progress)
+                            on_token=on_progress, cancelled=cancelled)
             finally:
                 pipe.decode = orig_decode
                 pipe.vae_core_frames = orig_core
@@ -267,7 +304,7 @@ def generate(pipe, *, style: str, lyrics: str, cot: str = "full", seed: int = 83
             return pipe(style=style, lyrics=lyrics, cot=cot, seed=int(seed),
                         abc=abc, cfg_scale=cfg_scale,
                         abc_sampling=abc_sampling, semantic_sampling=semantic_sampling,
-                        on_token=on_progress)
+                        on_token=on_progress, cancelled=cancelled)
         finally:
             pipe.vae_core_frames = orig_core
 

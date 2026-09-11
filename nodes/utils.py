@@ -34,6 +34,25 @@ def advance(bar, n: int = 1) -> None:
             pass
 
 
+def check_interrupted() -> None:
+    """在长环节（转录/解码各块）之间响应 ComfyUI 的中断按钮。
+
+    抛出 comfy 的 InterruptProcessingException 使节点优雅退出；
+    不在 ComfyUI 环境时是空操作。
+    """
+    try:
+        from comfy.model_management import (throw_exception_if_processing_interrupted,
+                                            InterruptProcessingException)
+    except ImportError:
+        return
+    try:
+        throw_exception_if_processing_interrupted()
+    except InterruptProcessingException:
+        raise
+    except Exception:
+        pass
+
+
 def timestamp_dir(root: str, prefix: str = "") -> str:
     """在 ComfyUI 输出目录下创建带时间戳的子目录。"""
     path = os.path.join(folder_paths.get_output_directory(), root,
